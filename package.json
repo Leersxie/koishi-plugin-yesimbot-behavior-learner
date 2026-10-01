@@ -1,0 +1,62 @@
+{
+  "name": "koishi-plugin-yesimbot-behavior-learner",
+  "version": "1.0.0",
+  "description": "YesImBot 行为学习器：从对话提炼候选行为偏好 → 私聊推送确认 → 采纳后写入行为文档（绝不自动改 persona.md）",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "files": [
+    "lib"
+  ],
+  "keywords": [
+    "koishi",
+    "plugin",
+    "yesimbot",
+    "behavior",
+    "行为学习",
+    "偏好提炼"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Leersxie/koishi-plugin-yesimbot-behavior-learner.git"
+  },
+  "homepage": "https://github.com/Leersxie/koishi-plugin-yesimbot-behavior-learner",
+  "bugs": {
+    "url": "https://github.com/Leersxie/koishi-plugin-yesimbot-behavior-learner/issues"
+  },
+  "sideEffects": false,
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "koishi": {
+    "description": {
+      "zh": "YesImBot 行为学习器：从对话中提炼值得学习的行为偏好，私聊推送候选，用户确认后写入行为文档（data/yesimbot/memory/core/behavior.md），全程可控，绝不自动写入 persona.md。",
+      "en": "YesImBot behavior learner: extract behavioral preferences from conversations, push candidates via private message, write into behavior docs after user confirmation."
+    },
+    "service": {
+      "required": [],
+      "optional": [
+        "database",
+        "yesimbot.model",
+        "yesimbot.world-state",
+        "yesimbot.memory"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w --preserveWatchOutput",
+    "clean": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\""
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "koishi": "^4.18.7",
+    "koishi-plugin-yesimbot": "^3.0.3"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "koishi": "^4.18.7",
+    "koishi-plugin-yesimbot": "^3.0.3",
+    "typescript": "^5.6.0"
+  }
+}
