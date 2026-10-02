@@ -1,8 +1,9 @@
 import type { Context, Logger, Session } from 'koishi'
 import { promises as fs } from 'node:fs'
+import { join } from 'node:path'
 import type { Config } from '../config'
-import { behaviorFilePath } from '../paths'
-import { hashContent, truncate } from '../utils'
+import { backupsDir, behaviorFilePath } from '../paths'
+import { hashContent, timestampForBackup, truncate } from '../utils'
 import {
   ensureBehaviorFile,
   hashBehavior,
@@ -14,6 +15,7 @@ import {
   writeBehavior,
 } from './behavior-file'
 import type { BehaviorCategory } from './behavior-file'
+import { BEHAVIOR_SECTIONS } from './behavior-file'
 import {
   clearCandidates,
   getPending,
@@ -26,6 +28,7 @@ import {
   updateBehaviorHash,
 } from './pending-store'
 import type { PendingCandidate } from './pending-store'
+import { formatStats, loadStats, recordAction } from './stats-store'
 
 /**
  * 「行为」指令组。
@@ -37,6 +40,8 @@ import type { PendingCandidate } from './pending-store'
  * - 行为 全跳过                → 清空全部待确认候选
  * - 行为 查看                  → 列出待确认候选 + 外部修改告警
  * - 行为 撤销                  → 回滚最近一次合并（恢复备份 + 候选回到待确认，可重新采纳）
+ * - 行为 导出                  → 导出行为文件（当前行为准则）为 Markdown/JSON，写入备份目录
+ * - 行为 统计                  → 查看采纳率/跳过率/分类分布与最近动作
  *
  * 权限：allowUserIds 有值则仅这些 userId；留空则仅超级管理员（authority >= 3）。
  * 并发防冲突：每次写入前重读最新文件 + 重算 hash，与候选生成时的 behaviorHash 对比，
@@ -97,6 +102,7 @@ export class CommandHandler {
     this.ctx.command('行为.全跳过', '清空全部待确认候选').action(async ({ session }) => {
       if (!this.isAllowed(session)) return '你没有权限使用「行为」指令'
       await clearCandidates(this.ctx)
+      await recordAction(this.ctx, 'clear', null)
       this.logger.info(`[行为指令] 用户 ${session!.userId} 执行全跳过`)
       return '已跳过全部待确认候选'
     })
@@ -109,6 +115,18 @@ export class CommandHandler {
     this.ctx.command('行为.撤销', '回滚最近一次合并（候选重新回到待确认，可再次采纳）').action(async ({ session }) => {
       if (!this.isAllowed(session)) return '你没有权限使用「行为」指令'
       return this.undo(session)
+    })
+
+    this.ctx.command('行为.导出', '导出行为文件（当前行为准则）为 Markdown/JSON，写入备份目录').action(async ({ session }) => {
+      if (!this.isAllowed(session)) return '你没有权限使用「行为」指令'
+      await this.exportBehavior()
+      return `已导出行为文件到 ${backupsDir(this.ctx)}/（原文件未改动）`
+    })
+
+    this.ctx.command('行为.统计', '查看行为提炼的采纳率/跳过率/分类分布与最近动作').action(async ({ session }) => {
+      if (!this.isAllowed(session)) return '你没有权限使用「行为」指令'
+      const stats = await loadStats(this.ctx)
+      return formatStats(stats)
     })
   }
 
@@ -146,6 +164,7 @@ export class CommandHandler {
     // 与已有条目相似度 > 0.8 → 跳过写入；候选视为已消化，从 pending 移除
     if (result.action === 'duplicate') {
       await removePending(this.ctx, id)
+      await recordAction(this.ctx, 'duplicate', candidate)
       return `未写入：与「${category}」章节已有条目相似度过高（>0.8），已自动跳过该候选 ${id}`
     }
 
@@ -154,6 +173,8 @@ export class CommandHandler {
     // 记录撤销栈 + 校准 hash 基线 + 移除候选
     await pushAccepted(this.ctx, { candidate, backupPath: backup.path }, this.config.backupKeep)
     await removePending(this.ctx, id)
+    // 统计：记录本次采纳（含置信度，供「行为 统计」算采纳率）
+    await recordAction(this.ctx, 'adopt', candidate)
     const newHash = await hashBehavior(this.ctx)
     await updateBehaviorHash(this.ctx, newHash)
 
@@ -172,6 +193,7 @@ export class CommandHandler {
       return `候选 ${id} 不存在或已过期，请先「行为 查看」确认编号`
     }
     await removePending(this.ctx, id)
+    await recordAction(this.ctx, 'skip', candidate)
     this.logger.info(`[行为指令] 用户 ${session.userId} 跳过候选 ${id}`)
     return `已跳过候选 ${id} [${candidate.category}]：${truncate(candidate.text, 40)}`
   }
@@ -209,6 +231,33 @@ export class CommandHandler {
       }
     }
     return lines.join('\n')
+  }
+
+  // ==================== 导出 ====================
+
+  /** 导出行为文件：Markdown 原样复制 + JSON 结构化视图，写入 backups/（.md.bak / .json 不注入 core） */
+  private async exportBehavior(): Promise<void> {
+    await ensureBehaviorFile(this.ctx, this.logger)
+    const raw = await readBehavior(this.ctx)
+    const doc = parseBehavior(raw)
+    const stamp = timestampForBackup()
+    const dir = backupsDir(this.ctx)
+    await fs.mkdir(dir, { recursive: true })
+
+    // 1) Markdown：原文件内容（同样 .md.bak 后缀，避开 core 扫描注入）
+    const mdPath = join(dir, `behavior.export-${stamp}.md.bak`)
+    await fs.writeFile(mdPath, raw, 'utf8')
+
+    // 2) JSON：结构化章节视图（条目列表 + 原始内容），便于程序化迁移
+    const json: Record<string, string[]> = {}
+    for (const cat of BEHAVIOR_SECTIONS) {
+      const view = doc.sections.get(cat)
+      json[cat] = view?.items ?? []
+    }
+    const jsonPath = join(dir, `behavior.export-${stamp}.json`)
+    await fs.writeFile(jsonPath, JSON.stringify({ exportedAt: new Date().toISOString(), sections: json }, null, 2), 'utf8')
+
+    this.logger.info(`[行为导出] 已导出 Markdown（${mdPath}）与 JSON（${jsonPath}）`)
   }
 
   // ==================== 撤销 ====================
