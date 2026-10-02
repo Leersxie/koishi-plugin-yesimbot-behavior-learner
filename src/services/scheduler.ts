@@ -8,6 +8,8 @@ import type { FlatMessage } from './message-collector'
 import { notifyCandidate } from './notifier'
 import { loadPending, purgeExpired, storeRound } from './pending-store'
 import type { PendingCandidate } from './pending-store'
+import { nextTriggerInTz } from '../utils'
+import { recordRound } from './stats-store'
 
 /**
  * 每日行为提炼调度器。
@@ -73,20 +75,17 @@ export class BehaviorScheduler {
     this.schedule()
   }
 
-  /** 计算下一个触发时刻并递归调度；已过则顺延次日（错过不补发） */
+  /** 计算下一个触发时刻（按配置时区，避免容器 UTC 导致时刻错位）并递归调度；已过则顺延次日（错过不补发） */
   private schedule(): void {
     const [hour, minute] = this.config.scheduleTime.split(':').map(Number)
-    const now = new Date()
-    const next = new Date()
-    next.setHours(hour, minute, 0, 0)
-    if (now >= next) next.setDate(next.getDate() + 1)
-    const delay = next.getTime() - now.getTime()
+    const next = nextTriggerInTz(this.config.timezone, hour!, minute!)
+    const delay = next.getTime() - Date.now()
     if (this.timer) clearTimeout(this.timer)
     this.timer = setTimeout(() => {
       this.timer = null
       void this.run()
-    }, delay)
-    this.logger.debug(`[行为调度] 下一次提炼：${next.toLocaleString()}`)
+    }, Math.max(0, delay))
+    this.logger.debug(`[行为调度] 下一次提炼：${next.toLocaleString('zh-CN', { timeZone: this.config.timezone })}（${this.config.timezone}）`)
   }
 
   /** 手动触发一轮（调试用），与定时同一逻辑 */
@@ -114,49 +113,51 @@ export class BehaviorScheduler {
     try {
       // 1) 先清过期候选（过期即删除 = 跳过，文件不会越积越脏）
       const removed = await purgeExpired(this.ctx, this.config.candidateTtlHours)
-    if (removed.length) this.logger.info(`[行为调度] 清理过期候选：${removed.join('、')}（等价跳过）`)
+      if (removed.length) this.logger.info(`[行为调度] 清理过期候选：${removed.join('、')}（等价跳过）`)
 
-    // 2) 按日采集（空则静默跳过，不打扰用户）
-    const { messages } = await collectTodayMessages(this.ctx, this.config, this.logger)
-    if (!messages.length) {
-      this.logger.debug('[行为调度] 当天消息为空，静默跳过本轮（不推送）')
-      return '当天消息为空，已跳过本轮提炼'
-    }
-
-    // 3) 提炼（prompt 硬约束在 extractor 内部；失败不自动重试，仅记录并放弃本轮）
-    const materials = formatMaterials(messages)
-    let list: ModelCandidate[]
-    try {
-      list = await extractCandidates(this.ctx, this.config, materials, this.logger)
-    } catch (error) {
-      if (error instanceof ExtractionError) {
-        this.logger.warn(`[行为调度] 本轮提炼放弃：${error.message}`)
-        return `提炼失败（${error.message}），本轮无候选`
+      // 2) 按日采集（空则静默跳过，不打扰用户）
+      const { messages } = await collectTodayMessages(this.ctx, this.config, this.logger)
+      if (!messages.length) {
+        this.logger.debug('[行为调度] 当天消息为空，静默跳过本轮（不推送）')
+        return '当天消息为空，已跳过本轮提炼'
       }
-      this.logger.error(`[行为调度] 提炼异常：${(error as Error).message}`)
-      return '提炼异常，本轮无候选'
-    }
-    const capped = list.slice(0, this.config.maxCandidates)
-    if (!capped.length) {
-      this.logger.warn('[行为调度] 本轮未提炼出有效候选（无证据/分类非法，已过滤）')
-      return '本轮未提炼出有效候选'
-    }
 
-    // 4) 轮次 + 候选暂存（独立 pending 文件，不注入 core）
-    const prev = await loadPending(this.ctx)
-    const round = prev.round + 1
-    const candidates = buildPendingList(capped, round, messages)
-    if (prev.candidates.length) {
-      this.logger.info('[行为调度] 上一轮候选已作废，本轮候选已生成（推送文案含作废说明）')
-    }
-    // 生成基线 hash：候选生成时 behavior.md 的内容 hash（采纳时防外部修改）
-    await ensureBehaviorFile(this.ctx, this.logger)
-    const behaviorHash = await hashBehavior(this.ctx)
-    await storeRound(this.ctx, behaviorHash, candidates, round, this.logger)
+      // 3) 提炼（prompt 硬约束在 extractor 内部；失败不自动重试，仅记录并放弃本轮）
+      const materials = formatMaterials(messages)
+      let list: ModelCandidate[]
+      try {
+        list = await extractCandidates(this.ctx, this.config, materials, this.logger)
+      } catch (error) {
+        if (error instanceof ExtractionError) {
+          this.logger.warn(`[行为调度] 本轮提炼放弃：${error.message}`)
+          return `提炼失败（${error.message}），本轮无候选`
+        }
+        this.logger.error(`[行为调度] 提炼异常：${(error as Error).message}`)
+        return '提炼异常，本轮无候选'
+      }
+      const capped = list.slice(0, this.config.maxCandidates)
+      if (!capped.length) {
+        this.logger.warn('[行为调度] 本轮未提炼出有效候选（无证据/分类非法，已过滤）')
+        return '本轮未提炼出有效候选'
+      }
 
-    // 5) 私聊推送（逐目标降级链在 notifier 内部；失败仅 warn 不重试）
-    await notifyCandidate(this.ctx, this.config, candidates, round, this.logger)
-    return `已提炼 ${candidates.length} 条候选（轮次 ${round}）并推送确认`
+      // 4) 轮次 + 候选暂存（独立 pending 文件，不注入 core）
+      const prev = await loadPending(this.ctx)
+      const round = prev.round + 1
+      const candidates = buildPendingList(capped, round, messages)
+      if (prev.candidates.length) {
+        this.logger.info('[行为调度] 上一轮候选已作废，本轮候选已生成（推送文案含作废说明）')
+      }
+      // 生成基线 hash：候选生成时 behavior.md 的内容 hash（采纳时防外部修改）
+      await ensureBehaviorFile(this.ctx, this.logger)
+      const behaviorHash = await hashBehavior(this.ctx)
+      await storeRound(this.ctx, behaviorHash, candidates, round, this.logger)
+      // 统计：记录本轮候选（供「行为 统计」展示采纳率等）
+      await recordRound(this.ctx, candidates)
+
+      // 5) 私聊推送（逐目标降级链在 notifier 内部；失败仅 warn 不重试）
+      await notifyCandidate(this.ctx, this.config, candidates, round, this.logger)
+      return `已提炼 ${candidates.length} 条候选（轮次 ${round}）并推送确认`
     } finally {
       this.running = false
     }

@@ -1,7 +1,7 @@
 import type { Context, Logger } from 'koishi'
 import type { Config } from '../config'
 import type { PendingCandidate } from './pending-store'
-import { truncate } from '../utils'
+import { sleep, truncate } from '../utils'
 
 /**
  * 候选私聊推送。
@@ -13,11 +13,14 @@ import { truncate } from '../utils'
  * 降级链（定死）：
  *   1) bot.sendPrivateMessage(userId, text)
  *   2) 失败 → bot.sendMessage('private:' + userId, text)（OneBot 等支持 private: 前缀）
- *   3) 仍失败 → 在 instructorChannel 任意频道的最后一条消息上下文不可行（无 session），
- *      仅 warn 日志并标记不可达，不重试。
+ *   3) 仍失败 → 延迟 5s 重试一次（容器拉起的瞬间 WS 可能尚未就绪，internal._request 未挂载，重试可自愈）
+ *   4) 再失败 → 仅 warn 日志并标记不可达，不重试。
  *
  * 无私信权限：直接 warn 且不重试（不发频道 @ 打扰群聊，保持可控）。
  */
+
+/** 发送延迟常量：WS 未就绪窗口的重试等待 */
+const RETRY_DELAY_MS = 5000
 
 /** 解析推送目标：platform:userId 或 userId */
 export function parseNotifyTarget(target: string): { platform: string | null; userId: string } {
@@ -31,14 +34,14 @@ export function parseNotifyTarget(target: string): { platform: string | null; us
   return { platform: platform || null, userId: userId || target }
 }
 
-/** 组装候选推送文案 */
+/** 组装候选推送文案：每条带「原文 → 提炼」对比视图 */
 export function buildNotification(candidates: PendingCandidate[], round: number): string {
   const lines: string[] = [`【行为候选 · 第 ${round} 轮】`, '本轮候选已生成，若与上一轮编号冲突则以本轮为准（旧编号作废）。请回复「行为 采纳 <ID>」或「行为 跳过 <ID>」。', '']
   for (const c of candidates) {
     const mark = c.confidence >= 0.8 ? '建议采纳' : '建议确认'
     lines.push(
-      `${c.id} [${c.category}] ${c.text}`,
-      `　证据：「${truncate(c.evidence, 60)}」(${c.time}) · ${mark} · 来源 ${c.channelCid}`,
+      `${c.id} [${c.category}] 提炼：「${truncate(c.text, 60)}」`,
+      `　原文：「${truncate(c.evidence, 60)}」(${c.time}) · ${mark} · 来源 ${c.channelCid}`,
       '',
     )
   }
@@ -69,6 +72,31 @@ export function pickBot(ctx: Context, platform: string | null): PickResult | nul
   return null
 }
 
+/** 依次尝试发送链（sendPrivateMessage → sendMessage private:）；返回是否最终成功 */
+async function trySendPrivate(
+  bot: any,
+  userId: string,
+  target: string,
+  text: string,
+  logger: Logger,
+): Promise<boolean> {
+  // 1) sendPrivateMessage
+  try {
+    await bot.sendPrivateMessage(userId, text)
+    return true
+  } catch (error) {
+    logger.warn(`[行为推送] sendPrivateMessage 失败（目标 ${target}）：${(error as Error).message}，尝试降级`)
+  }
+  // 2) sendMessage + private: 前缀
+  try {
+    await bot.sendMessage(`private:${userId}`, text)
+    return true
+  } catch (error) {
+    logger.warn(`[行为推送] 降级 sendMessage private: 也失败（目标 ${target}）：${(error as Error).message}`)
+  }
+  return false
+}
+
 /** 发送私聊推送；返回是否成功 */
 export async function notifyCandidate(
   ctx: Context,
@@ -95,22 +123,16 @@ export async function notifyCandidate(
       )
     }
     const { bot } = picked
-    // 1) sendPrivateMessage
-    try {
-      await bot.sendPrivateMessage(userId, text)
-      continue
-    } catch (error) {
-      logger.warn(`[行为推送] sendPrivateMessage 失败（目标 ${target}）：${(error as Error).message}，尝试降级`)
+    let ok = await trySendPrivate(bot, userId, target, text, logger)
+    // 3) 失败 → 延迟重试一次（容器拉起瞬间 WS 未就绪，internal._request 未挂载，5s 后往往自愈）
+    if (!ok) {
+      await sleep(RETRY_DELAY_MS)
+      ok = await trySendPrivate(bot, userId, target, text, logger)
     }
-    // 2) sendMessage + private: 前缀
-    try {
-      await bot.sendMessage(`private:${userId}`, text)
-      continue
-    } catch (error) {
-      logger.warn(`[行为推送] 降级 sendMessage private: 也失败（目标 ${target}）：${(error as Error).message}`)
+    if (!ok) {
+      // 4) 仍失败：仅 warn，不重试、不发频道 @（保持可控，避免群聊骚扰）
+      logger.warn(`[行为推送] 目标 ${target} 私信不可达，已放弃本轮通知（不重试）`)
     }
-    // 3) 均失败：仅 warn，不重试、不发频道 @ （保持可控，避免群聊骚扰）
-    logger.warn(`[行为推送] 目标 ${target} 私信不可达，已放弃本轮通知（不重试）`)
   }
 }
 
