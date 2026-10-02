@@ -1,20 +1,11 @@
 {
   "name": "koishi-plugin-yesimbot-behavior-learner",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "YesImBot 行为学习器：从对话提炼候选行为偏好 → 私聊推送确认 → 采纳后写入行为文档（绝不自动改 persona.md）",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
-  "files": [
-    "lib"
-  ],
-  "keywords": [
-    "koishi",
-    "plugin",
-    "yesimbot",
-    "behavior",
-    "行为学习",
-    "偏好提炼"
-  ],
+  "files": ["lib"],
+  "keywords": ["koishi", "plugin", "yesimbot", "behavior", "行为学习", "偏好提炼"],
   "repository": {
     "type": "git",
     "url": "https://github.com/Leersxie/koishi-plugin-yesimbot-behavior-learner.git"
@@ -34,12 +25,7 @@
     },
     "service": {
       "required": [],
-      "optional": [
-        "database",
-        "yesimbot.model",
-        "yesimbot.world-state",
-        "yesimbot.memory"
-      ]
+      "optional": ["database", "yesimbot.model", "yesimbot.world-state", "yesimbot.memory"]
     }
   },
   "scripts": {

@@ -53,6 +53,11 @@ export function pendingFilePath(ctx: Context): string {
   return join(yesimbotDataDir(ctx), 'memory', 'behavior.pending.json')
 }
 
+/** 行为统计文件（不注入）：memory/behavior.stats.json */
+export function statsFilePath(ctx: Context): string {
+  return join(yesimbotDataDir(ctx), 'memory', 'behavior.stats.json')
+}
+
 /** 备份目录（不注入，.md.bak 后缀避开扫描）：memory/backups */
 export function backupsDir(ctx: Context): string {
   return join(yesimbotDataDir(ctx), 'memory', 'backups')

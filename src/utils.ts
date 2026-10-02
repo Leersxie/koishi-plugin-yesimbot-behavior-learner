@@ -50,6 +50,54 @@ export function todayBounds(now: Date = new Date()): { start: Date; end: Date } 
   return { start, end }
 }
 
+/** 取目标时区的本地时间部件（年月日时分），用于不依赖容器时区的调度/采集 */
+export function tzParts(timeZone: string, date: Date = new Date()): { year: number; month: number; day: number; hour: number; minute: number } {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+  const parts = Object.fromEntries(dtf.formatToParts(date).map((p) => [p.type, p.value]))
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour) % 24, // en-US 可能在午夜输出 24
+    minute: Number(parts.minute),
+  }
+}
+
+/** 目标时区相对 UTC 的分钟偏移（北京 = +480）；用同一时刻在目标时区/UTC 的部件差计算，兼容夏令时 */
+function tzOffsetMinutes(timeZone: string, date: Date): number {
+  const toMinutes = (p: { year: number; month: number; day: number; hour: number; minute: number }): number =>
+    Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute) / 60000
+  return Math.round(toMinutes(tzParts(timeZone, date)) - toMinutes(tzParts('UTC', date)))
+}
+
+/** 按目标时区计算「当天」边界 [start, end)（返回 UTC Date，左闭右开） */
+export function todayBoundsInTz(timeZone: string, now: Date = new Date()): { start: Date; end: Date } {
+  const { year, month, day } = tzParts(timeZone, now)
+  const offsetMin = tzOffsetMinutes(timeZone, now)
+  // 「目标时区当天 00:00」的假 UTC 毫秒，减去偏移得到真实 UTC 时刻
+  const start = new Date(Date.UTC(year, month - 1, day, 0, 0, 0) - offsetMin * 60000)
+  const end = new Date(start)
+  end.setUTCDate(end.getUTCDate() + 1)
+  return { start, end }
+}
+
+/** 目标时区 HH:mm 的下一次触发时刻（UTC Date；当天已过则顺延次日，错过不补发） */
+export function nextTriggerInTz(timeZone: string, hour: number, minute: number, now: Date = new Date()): Date {
+  const { year, month, day } = tzParts(timeZone, now)
+  const offsetMin = tzOffsetMinutes(timeZone, now)
+  const today = Date.UTC(year, month - 1, day, hour, minute, 0) - offsetMin * 60000
+  if (today > now.getTime()) return new Date(today)
+  return new Date(today + 86400000)
+}
+
 /** 字符级编辑距离（Levenshtein）——相似度算法的组成部分 */
 export function levenshtein(a: string, b: string): number {
   const m = a.length

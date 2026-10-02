@@ -8,8 +8,10 @@ export interface Config {
   // ===== 提炼与调度 =====
   /** 是否启用每日行为提炼（定时任务） */
   scheduleEnabled: boolean
-  /** 每日触发时刻 HH:mm，默认 23:30 */
+  /** 每日触发时刻 HH:mm（按 timezone 时区，默认 23:30） */
   scheduleTime: string
+  /** 定时触发与「当天」消息采集使用的时区（IANA 名，默认 Asia/Shanghai）；容器可能是 UTC，必须显式指定 */
+  timezone: string
   /** 提炼采集的频道列表（格式 platform:channelId）；一期只在这些频道跑，空则不自动采集 */
   instructorChannel: string[]
   /** 提炼用的模型组（YesImBot 任务键，如 chat / summarize / memory） */
@@ -44,7 +46,10 @@ export const Config = Schema.object({
   scheduleTime: Schema.string()
     .pattern(/^\d{1,2}:\d{2}$/)
     .default('23:30')
-    .description('每日触发时刻 HH:mm，默认 23:30'),
+    .description('每日触发时刻 HH:mm（按 timezone 时区，默认 23:30）'),
+  timezone: Schema.string()
+    .default('Asia/Shanghai')
+    .description('定时触发与「当天」消息采集使用的时区（IANA 名，如 Asia/Shanghai）；容器若为 UTC 必须显式指定，否则按容器时区触发'),
   instructorChannel: Schema.array(Schema.string())
     .default([])
     .description('提炼采集的频道列表（格式 platform:channelId）；一期只在这些频道跑，空则不自动采集'),
