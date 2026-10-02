@@ -2,7 +2,7 @@ import type { Context, Logger } from 'koishi'
 import { TableName } from 'koishi-plugin-yesimbot'
 import type { Config } from '../config'
 import type { PendingCandidate } from './pending-store'
-import { formatTime, HIGHLIGHT_KEYWORDS, todayBounds, tsToDate } from '../utils'
+import { formatTime, HIGHLIGHT_KEYWORDS, todayBoundsInTz, tsToDate } from '../utils'
 
 /**
  * 当天消息采集。
@@ -137,7 +137,7 @@ export async function collectTodayMessages(
     logger.debug('[行为采集] 未配置 instructorChannel，跳过本轮')
     return { messages: [], channelCount: 0 }
   }
-  const { start, end } = todayBounds()
+  const { start, end } = todayBoundsInTz(config.timezone)
   const all: FlatMessage[] = []
   let channelCount = 0
   for (const entry of config.instructorChannel) {
