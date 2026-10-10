@@ -40,8 +40,6 @@ import { formatStats, loadStats, recordAction } from './stats-store'
  * - 行为 全跳过                → 清空全部待确认候选
  * - 行为 查看                  → 列出待确认候选 + 外部修改告警
  * - 行为 撤销                  → 回滚最近一次合并（恢复备份 + 候选回到待确认，可重新采纳）
- * - 行为 导出                  → 导出行为文件（当前行为准则）为 Markdown/JSON，写入备份目录
- * - 行为 统计                  → 查看采纳率/跳过率/分类分布与最近动作
  *
  * 权限：allowUserIds 有值则仅这些 userId；留空则仅超级管理员（authority >= 3）。
  * 并发防冲突：每次写入前重读最新文件 + 重算 hash，与候选生成时的 behaviorHash 对比，

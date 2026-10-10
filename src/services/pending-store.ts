@@ -153,7 +153,13 @@ export async function clearPending(ctx: Context): Promise<void> {
   await savePending(ctx, file)
 }
 
-/** 记录当前 round 与新候选；旧轮候选直接覆盖（作废）。保留 behaviorHash 供采纳时防冲突校验 */
+/**
+ * 记录当前 round 与新候选；旧轮候选直接覆盖（作废）。保留 behaviorHash 供采纳时防冲突校验。
+ *
+ * 撤销栈必须一并保留：每日定时提炼都会走到这里，若在此清空，
+ * 「行为 撤销」在每天提炼之后必然失效（还会误报成“未采纳过候选”），
+ * 而这恰恰是用户最需要回滚（刚采纳错一条）的时刻。
+ */
 export async function storeRound(
   ctx: Context,
   behaviorHash: string,
@@ -161,9 +167,21 @@ export async function storeRound(
   round: number,
   logger: Logger,
 ): Promise<void> {
-  const file = { round, behaviorHash, candidates, acceptedStack: [] }
+  const prev = await loadPending(ctx)
+  // 只保留备份文件仍存在的记录：备份目录按 backupKeep 轮转，
+  // 悬空引用会让「撤销」直接报错，不如在这里提前剔除并留下日志。
+  const alive: AcceptedEntry[] = []
+  for (const entry of prev.acceptedStack) {
+    try {
+      await fs.access(entry.backupPath)
+      alive.push(entry)
+    } catch {
+      logger.warn(`已丢弃悬空的撤销记录（备份文件不存在）：${entry.backupPath}`)
+    }
+  }
+  const file: PendingFile = { round, behaviorHash, candidates, acceptedStack: alive }
   await savePending(ctx, file)
-  logger.info(`候选已暂存（轮次 ${round}，共 ${candidates.length} 条）`)
+  logger.info(`候选已暂存（轮次 ${round}，共 ${candidates.length} 条），撤销栈保留 ${alive.length} 层`)
 }
 
 /** 更新 pending 的 behaviorHash（采纳/撤销后校准防冲突基线） */

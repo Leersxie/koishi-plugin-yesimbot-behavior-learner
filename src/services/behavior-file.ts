@@ -49,6 +49,12 @@ export interface SectionView {
   items: string[]
   /** 每个条目的原文行，与 items 一一对应（用于替换/定位） */
   lines: string[]
+  /**
+   * 每个条目在原文中的行号，与 items/lines 一一对应；新增条目为 -1。
+   * 写回时据此做「行级回放」：只替换原本就是本条目的行，其余行（locked 块、
+   * 用户手写段落、非标准标签行、空行）原样保留，避免整段丢弃造成静默数据丢失。
+   */
+  lineIndexes: number[]
 }
 
 /**
@@ -80,7 +86,7 @@ export interface BackupInfo {
 export function parseBehavior(raw: string): BehaviorDoc {
   const lines = raw.split('\n')
   const sections = new Map<string, SectionView>()
-  for (const t of SECTION_TITLES) sections.set(t, { start: -1, end: -1, items: [], lines: [] })
+  for (const t of SECTION_TITLES) sections.set(t, { start: -1, end: -1, items: [], lines: [], lineIndexes: [] })
 
   let current: string | null = null
   let locked = false
@@ -142,6 +148,7 @@ export function parseBehavior(raw: string): BehaviorDoc {
     const view = sections.get(current)!
     view.items.push(text)
     view.lines.push(line)
+    view.lineIndexes.push(i)
     lastBodyEnd = i
   }
 
@@ -226,6 +233,7 @@ export function mergeIntoSection(
   const line = `* [${category}] ${text}`
   view.items.push(text)
   view.lines.push(line)
+  view.lineIndexes.push(-1) // 新增条目没有原文行号：写回时追加到章节末尾
   return { action: 'append', category, text, targetLines: [line] }
 }
 
@@ -240,8 +248,14 @@ export function findOriginalLine(doc: BehaviorDoc, category: BehaviorCategory, t
 /**
  * 把内存中的章节视图重建为完整文件内容（写回用）。
  *
- * 原则：流式输出。遇到标准章节标题时，用 view.lines（最新条目行）替换其内容区，
- * 跳过原内容区行；其余行（frontmatter、待确认章节、locked 段落、未知行）原样输出。
+ * 原则：**行级回放**。遇到标准章节标题时，只把「原本就属于本章节条目」的那些行
+ * 替换为最新文本；其余行（locked 注释块、用户手写段落、非标准标签行、空行）
+ * 一律原样输出；本轮新增的条目追加到章节末尾。
+ *
+ * 早前是「整段替换」写法：直接丢弃整个内容区再重放 view.lines，
+ * 而解析阶段收集的 skippedLines 从未被消费 —— 结果是用户写在章节内的
+ * `<!-- ... -->` 锁定块与手写段落，会在第一次采纳候选后静默消失，
+ * 而 behavior.md 是每轮对话都会注入的注入源。
  */
 export function serializeBehavior(doc: BehaviorDoc): string {
   const lines = doc.raw.split('\n')
@@ -250,16 +264,39 @@ export function serializeBehavior(doc: BehaviorDoc): string {
   while (i < lines.length) {
     const line = lines[i]!
     const trimmed = line.trim()
-    // 标准章节标题：输出标题行 + 最新条目行，跳过原内容区
+    // 标准章节标题：输出标题行，然后按行号回放内容区
     if (trimmed.startsWith('## ') && BEHAVIOR_SECTIONS.includes(trimmed.slice(3).trim() as BehaviorCategory)) {
       output.push(line)
       const title = trimmed.slice(3).trim()
       const view = doc.sections.get(title)!
       const bodyStart = view.start + 1 // 标题后第一行
       const bodyEnd = Math.max(view.end, bodyStart - 1) // 原内容区最后一行
-      // 输出最新条目行（可能为空章节）
-      for (const itemLine of view.lines) output.push(itemLine)
-      // 跳过原内容区
+
+      // 原文行号 → 该条目最新文本；行号为 -1 的是本轮新增，稍后统一追加
+      const indexes = view.lineIndexes ?? []
+      const byIndex = new Map<number, string>()
+      const appended: string[] = []
+      view.lines.forEach((itemLine, idx) => {
+        const src = indexes[idx] ?? -1
+        if (src >= 0) byIndex.set(src, itemLine)
+        else appended.push(itemLine)
+      })
+
+      // 逐行回放：是条目的行用最新文本，其余行原样输出
+      for (let k = bodyStart; k <= bodyEnd && k < lines.length; k++) {
+        const replaced = byIndex.get(k)
+        if (replaced === undefined) {
+          output.push(lines[k]!)
+        } else {
+          output.push(replaced)
+          byIndex.delete(k)
+        }
+      }
+      // 兜底：条目行号理论上必落在内容区内；万一不在也不能静默丢内容
+      for (const leftover of byIndex.values()) output.push(leftover)
+      // 新增条目追加到章节末尾
+      for (const itemLine of appended) output.push(itemLine)
+
       i = bodyEnd + 1
       continue
     }

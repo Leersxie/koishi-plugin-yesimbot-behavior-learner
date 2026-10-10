@@ -2,7 +2,7 @@ import type { Context, Logger } from 'koishi'
 import { TableName } from 'koishi-plugin-yesimbot'
 import type { Config } from '../config'
 import type { PendingCandidate } from './pending-store'
-import { formatTime, HIGHLIGHT_KEYWORDS, todayBoundsInTz, tsToDate } from '../utils'
+import { formatTimeInTz, HIGHLIGHT_KEYWORDS, todayBoundsInTz, tsToDate } from '../utils'
 
 /**
  * 当天消息采集。
@@ -50,6 +50,7 @@ async function queryChannelDay(
   start: Date,
   end: Date,
   limit: number,
+  timeZone: string,
   logger: Logger,
 ): Promise<FlatMessage[]> {
   const db = ctx.database
@@ -61,7 +62,10 @@ async function queryChannelDay(
     const rows = await db.get(
       TableName.Messages,
       { platform, channelId, timestamp: { $gte: start, $lt: end } },
-      { fields: ['sender', 'content', 'timestamp'], limit },
+      // 必须显式排序：无 ORDER BY 时返回顺序未定义（实践中按主键序 = 当天最早的消息），
+      // 配合 limit 会拿到「最老」的 N 条 —— 忙频道里晚间真正值得学习的对话根本进不了素材。
+      // 先取最新的 N 条（desc），下面再排回升序给模型。
+      { fields: ['sender', 'content', 'timestamp'], sort: { timestamp: 'desc' }, limit },
     )
     return rows
       .map((row) => {
@@ -71,7 +75,8 @@ async function queryChannelDay(
           channelId,
           senderName: (row.sender as { name?: string; id?: string } | undefined)?.name || (row.sender as { id?: string } | undefined)?.id || '未知',
           content: String(row.content ?? '').trim(),
-          time: formatTime(ts),
+          // 与采集窗口同一时区：窗口按 config.timezone 算，HH:mm 也必须按它输出
+          time: formatTimeInTz(timeZone, ts),
           timestamp: ts,
         }
       })
@@ -146,7 +151,7 @@ export async function collectTodayMessages(
       logger.warn(`[行为采集] 忽略非法频道配置：${entry}（应为 platform:channelId）`)
       continue
     }
-    const day = await queryChannelDay(ctx, parsed.platform, parsed.channelId, start, end, config.maxMessagesPerChannel, logger)
+    const day = await queryChannelDay(ctx, parsed.platform, parsed.channelId, start, end, config.maxMessagesPerChannel, config.timezone, logger)
     if (day.length) {
       channelCount++
       all.push(...day)

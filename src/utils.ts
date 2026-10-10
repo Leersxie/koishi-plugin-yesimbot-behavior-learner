@@ -34,6 +34,20 @@ export function formatTime(date: Date = new Date()): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
+/**
+ * 按「配置时区」格式化为 HH:mm。
+ *
+ * 采集窗口用 todayBoundsInTz(config.timezone) 计算，而条目时间原先走 formatTime()
+ * （取容器本地时区）。容器为 UTC 时两者差 8 小时：窗口是北京时间的当天，
+ * 打出来的 HH:mm 却是 UTC。这些时间会进入候选、推送文案与提炼 prompt，
+ * 而 prompt 要求「time 必须来自素材原文」—— 模型只会照抄错值。
+ */
+export function formatTimeInTz(timeZone: string, date: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const { hour, minute } = tzParts(timeZone, date)
+  return `${pad(hour)}:${pad(minute)}`
+}
+
 /** 将毫秒时间戳（worldstate.messages.timestamp 为 ms epoch）转为 Date；非法回退当前时间 */
 export function tsToDate(ts: number | Date): Date {
   if (ts instanceof Date) return new Date(ts.getTime())

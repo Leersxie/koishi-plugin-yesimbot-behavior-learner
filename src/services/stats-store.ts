@@ -87,7 +87,7 @@ async function saveStats(ctx: Context, stats: StatsFile): Promise<void> {
 }
 
 /** 记录提炼轮次完成（轮数 + 本轮候选条数） */
-export async function recordRound(ctx: Context, candidates: PendingCandidate[]): Promise<void> {
+export async function recordRound(ctx: Context, candidates: PendingCandidate[], logger?: Logger): Promise<void> {
   const stats = await loadStats(ctx)
   stats.totalRounds += 1
   stats.totalCandidates += candidates.length
@@ -151,7 +151,7 @@ export function formatStats(stats: StatsFile): string {
     lines.push('【最近动作】')
     for (const h of recent) {
       const label = h.action === 'adopt' ? '采纳' : h.action === 'skip' ? '跳过' : h.action === 'duplicate' ? '查重命中' : '清空'
-      lines.push(`${h.timestamp ? new Date(h.timestamp).toLocaleString('zh-CN', { hour12: false }) : ''} ${label} ${h.candidateId} [${h.category}] 置信度 ${h.confidence.toFixed(2)}`)
+      lines.push(`${h.timestamp ? new Date(h.timestamp).toLocaleString('zh-CN') : ''} ${label} ${h.candidateId} [${h.category}] 置信度 ${h.confidence.toFixed(2)}`)
     }
   }
   return lines.join('\n')
